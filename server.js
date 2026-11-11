@@ -46,7 +46,7 @@ app.post('/api/payment/webhook', express.raw({ type: '*/*' }), async (req, res) 
 
     // Проверяем подпись от LavaPay
     const expectedSign = crypto
-      .createHmac('sha256', process.env.LAVA_API_KEY || '')
+      .createHmac('sha256', process.env.LAVA_SECRET_KEY_2 || '')
       .update(body)
       .digest('hex');
 
@@ -253,13 +253,13 @@ app.post('/api/payment/create', async (req, res) => {
     if (!amount || !email) {
       return res.status(400).json({ error: 'Укажите email и план' });
     }
-    if (!process.env.LAVA_API_KEY || !process.env.LAVA_SHOP_ID) {
+    if (!process.env.LAVA_SHOP_ID || !process.env.LAVA_SECRET_KEY) {
       return res.status(500).json({ error: 'Платёжная система не настроена' });
     }
 
     // orderId: "email_plan_timestamp" — по нему в webhook достанем кому выдать доступ
     const orderId = `${email}_${plan}_${Date.now()}`;
-    const host = process.env.SITE_URL || `https://${req.headers.host}`;
+    const host = process.env.SELF_URL || process.env.SITE_URL || `https://${req.headers.host}`;
 
     const body = {
       sum: amount,
@@ -272,13 +272,19 @@ app.post('/api/payment/create', async (req, res) => {
       currency: 'RUB',
     };
 
+   const bodyString = JSON.stringify(body);
+    const signature = crypto
+      .createHmac('sha256', process.env.LAVA_SECRET_KEY)
+      .update(bodyString)
+      .digest('hex');
+
     const response = await fetch('https://api.lava.ru/business/invoice/create', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Api-Key': process.env.LAVA_API_KEY,
+        'Signature': signature,
       },
-      body: JSON.stringify(body),
+      body: bodyString,
     });
 
     const data = await response.json();
@@ -308,25 +314,51 @@ app.post('/api/mentor', async (req, res) => {
     if (!message || typeof message !== 'string') {
       return res.status(400).json({ error: 'no_message' });
     }
-    if (!process.env.ANTHROPIC_API_KEY) {
-      return res.status(500).json({ error: 'no_api_key_configured' });
+
+    const systemPrompt = 'Ты AI Video Mentor — помощник по созданию видео с ИИ. Помогаешь писать промпты для Veo, Kling, Runway, Midjourney. Отвечаешь кратко, по делу, на русском.';
+
+    // Сначала пробуем Anthropic (если ключ есть)
+    if (process.env.ANTHROPIC_API_KEY) {
+      const r = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 1000,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: message }]
+        })
+      });
+      const data = await r.json();
+      return res.json({ answer: data.content?.[0]?.text || 'Не удалось получить ответ.' });
     }
-    const r = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1000,
-        system: 'Ты AI Video Mentor — помощник по созданию видео с ИИ. Помогаешь писать промпты для Veo, Kling, Runway. Отвечаешь кратко, на русском.',
-        messages: [{ role: 'user', content: message }]
-      })
-    });
-    const data = await r.json();
-    res.json({ answer: data.content?.[0]?.text || 'Не удалось получить ответ.' });
+
+    // Если Anthropic нет — используем Groq (у вас он уже есть)
+    if (process.env.GROQ_API_KEY) {
+      const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          max_tokens: 1000,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: message }
+          ]
+        })
+      });
+      const data = await r.json();
+      return res.json({ answer: data.choices?.[0]?.message?.content || 'Не удалось получить ответ.' });
+    }
+
+    return res.status(500).json({ error: 'no_api_key_configured' });
   } catch (e) {
     console.error('mentor error:', e);
     res.status(500).json({ error: 'mentor_error' });

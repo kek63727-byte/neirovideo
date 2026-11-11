@@ -1250,7 +1250,8 @@ footer {
         <div class="ai-promo-price-big">990 ₽</div>
         <div class="ai-promo-price-period">на 3 месяца</div>
         <div class="ai-promo-price-old">Потом будет 2 490 ₽</div>
-        <button class="ai-promo-btn" onclick="goto('auth')">Оформить предзаказ</button>
+        <button class="ai-promo-btn" onclick="startPayment('basic')">Оформить предзаказ</button>
+
         <div class="ai-promo-countdown-label">До открытия доступа:</div>
         <div class="ai-promo-countdown" id="ai-preorder-countdown" data-target="2026-08-10T00:00:00">
           <div class="ai-cd-box"><div class="ai-cd-num" id="ai-cd-d">00</div><div class="ai-cd-unit">дней</div></div>
@@ -1360,7 +1361,8 @@ footer {
             <li class="off">Живой чат с преподавателем</li>
             <li class="off">Сертификат о прохождении</li>
           </ul>
-          <button class="btn-ghost" onclick="goto('auth')">Выбрать «Самостоятельно»</button>
+          <button class="btn-ghost" onclick="startPayment('basic')">Выбрать «Самостоятельно»</button>
+
         </div>
         <div class="plan featured" style="transform:scale(1.03); box-shadow:0 20px 50px #8B6BFF33;">
           <div class="plan-badge">🔥 Самый популярный</div>
@@ -1381,7 +1383,8 @@ footer {
             <li>Подборка ИИ-инструментов 2026 с ценами и задачами под каждый</li>
             <li>Именной сертификат о прохождении</li>
           </ul>
-          <button class="btn-primary" onclick="goto('auth')">Записаться с поддержкой</button>
+          <button class="btn-primary" onclick="startPayment('premium')">Записаться с поддержкой</button>
+
           <div class="muted" style="font-size:12px; text-align:center; margin-top:10px;">Всего +1000 ₽ к базовому тарифу</div>
         </div>
       </div>
@@ -2454,7 +2457,7 @@ const LEGAL = {
 };
 
 /* ============ STATE ============ */
-const ADMIN_EMAILS = ['adminproekta669@amdin.local']; // укажите здесь свой email в нижнем регистре
+const ADMIN_EMAILS = ['kek63727@gmail.com']; // укажите здесь свой email в нижнем регистре
 let currentUser = null;
 let currentView = 'landing';
 let adminSelectedEmail = null;
@@ -2596,6 +2599,10 @@ async function setSessionEmail(email){
 
 /* ============ VIEW ROUTING ============ */
 function goto(view){
+  if(!sessionReady){
+    showToast('Секунду, загружаем сессию...', 'info');
+    return;
+  }
   if(view==="mentor" || view==="prompts" || view==="tts"){
     if(!currentUser){
       goto("auth");
@@ -2696,7 +2703,7 @@ async function submitAuth(){
       if(!document.getElementById('auth-agree').checked){ errEl.textContent='Нужно принять условия оферты и согласие на обработку данных.'; return; }
       const existing = await getUser(email);
       if(existing){ errEl.textContent='Этот email уже зарегистрирован. Войдите.'; return; }
-     const passHash = await sha256(pass);
+      const passHash = await sha256(pass);
       const isAdminEmail = ADMIN_EMAILS.includes(email);
 
       let refFromUrl = null;
@@ -2726,11 +2733,19 @@ async function submitAuth(){
       currentUser = newUser;
       showToast(isAdminEmail ? 'Аккаунт создан. Вам назначены права администратора.' : 'Аккаунт создан!', 'success');
       goto(currentUser.isAdmin ? 'admin' : 'dashboard');
-   } else {
+
+      // После регистрации — проверяем pending_plan
+      const pendingPlanReg = sessionStorage.getItem('pending_plan');
+      if(pendingPlanReg && !currentUser.isAdmin){
+        sessionStorage.removeItem('pending_plan');
+        setTimeout(() => startPayment(pendingPlanReg), 300);
+      }
+
+    } else {
       const u = await getUser(email);
       const passHash = await sha256(pass);
       if(!u || u.passHash !== passHash){ errEl.textContent='Неверный email или пароль.'; return; }
-      u.isAdmin = ADMIN_EMAILS.includes(u.email); // всегда сверяем с актуальным списком
+      u.isAdmin = ADMIN_EMAILS.includes(u.email);
       u.logins = u.logins || [];
       u.logins.push(Date.now());
       if(u.logins.length>500) u.logins = u.logins.slice(-500);
@@ -2739,6 +2754,13 @@ async function submitAuth(){
       currentUser = u;
       showToast('Добро пожаловать!', 'success');
       goto(u.isAdmin ? 'admin' : 'dashboard');
+
+      // После входа — проверяем pending_plan
+      const pendingPlanLogin = sessionStorage.getItem('pending_plan');
+      if(pendingPlanLogin && !u.isAdmin){
+        sessionStorage.removeItem('pending_plan');
+        setTimeout(() => startPayment(pendingPlanLogin), 300);
+      }
     }
   } catch(e){
     errEl.textContent = 'Что-то пошло не так. Попробуйте ещё раз.';
@@ -3946,16 +3968,26 @@ item.innerText
 
 });
 
-async function showPaymentInfo(){
-  if (!currentUser) { goto('auth'); return; }
-  
-  // Определяем какой план покупает
-  const plan = currentUser.plan === 'basic' ? 'premium' : 'basic';
-  const names = { basic: 'Самостоятельно — 990 ₽', premium: 'С поддержкой — 1 990 ₽' };
-  
-  const btn = event?.target;
-  if (btn) { btn.disabled = true; btn.textContent = 'Создаём счёт...'; }
-  
+async function startPayment(plan){
+  // Если не залогинен — отправляем на авторизацию, запоминаем нужный план
+  if (!currentUser) {
+    sessionStorage.setItem('pending_plan', plan);
+    goto('auth');
+    return;
+  }
+
+  // Если уже есть такой или лучший тариф
+  if (currentUser.plan === 'premium') {
+    showToast('У вас уже максимальный тариф!', 'info');
+    return;
+  }
+  if (currentUser.plan === plan) {
+    showToast('Этот тариф у вас уже активен', 'info');
+    return;
+  }
+
+  showToast('Создаём счёт...', 'info');
+
   try {
     const res = await fetch('/api/payment/create', {
       method: 'POST',
@@ -3965,14 +3997,12 @@ async function showPaymentInfo(){
     });
     const data = await res.json();
     if (data.url) {
-      window.location.href = data.url; // редирект на страницу оплаты LavaPay
+      window.location.href = data.url;
     } else {
-      showToast('Ошибка создания счёта: ' + (data.error || 'неизвестно'), 'warn');
+      showToast('Ошибка: ' + (data.error || 'попробуйте позже'), 'warn');
     }
   } catch (e) {
-    showToast('Ошибка: ' + e.message, 'warn');
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Оплатить'; }
+    showToast('Ошибка соединения', 'warn');
   }
 }
 
@@ -4656,6 +4686,7 @@ function initReveal(){
 })();
 
 /* ============ INIT ============ */
+let sessionReady = false;
 async function init(){
   renderCurriculum('curriculum-list', false);
   renderFAQ();
