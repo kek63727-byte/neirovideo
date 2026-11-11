@@ -37,14 +37,13 @@ app.use(session({
   }
 }));
 
-// ВАЖНО: webhook роут должен получать RAW body — регистрируем ДО express.json()
+// ====================== LAVAPAY WEBHOOK (должен быть ДО express.json) ======================
 app.post('/api/payment/webhook', express.raw({ type: '*/*' }), async (req, res) => {
   try {
     const body = req.body.toString();
     let data;
     try { data = JSON.parse(body); } catch { return res.sendStatus(400); }
 
-    // Проверяем подпись от LavaPay
     const expectedSign = crypto
       .createHmac('sha256', process.env.LAVA_SECRET_KEY_2 || '')
       .update(body)
@@ -53,20 +52,14 @@ app.post('/api/payment/webhook', express.raw({ type: '*/*' }), async (req, res) 
     const receivedSign = req.headers['x-signature'] || req.headers['signature'] || '';
 
     if (expectedSign !== receivedSign) {
-      console.warn('LavaPay webhook: неверная подпись!', { expectedSign, receivedSign });
-      // В тестовом режиме можно закомментировать строку ниже:
+      console.warn('LavaPay webhook: неверная подпись!');
       return res.sendStatus(403);
     }
 
-    console.log('LavaPay webhook получен:', JSON.stringify(data));
-
-    // Обрабатываем только успешные оплаты
     if (data.status !== 'success') {
-      console.log('Статус не success, пропускаем:', data.status);
       return res.sendStatus(200);
     }
 
-    // orderId формат: "email_plan_timestamp", например "user@mail.com_premium_1717000000000"
     const orderId = data.orderId || data.order_id || '';
     const parts = orderId.split('_');
     if (parts.length < 3) {
@@ -74,22 +67,20 @@ app.post('/api/payment/webhook', express.raw({ type: '*/*' }), async (req, res) 
       return res.sendStatus(200);
     }
 
-    const plan = parts[parts.length - 2];       // "basic" или "premium"
-    const email = parts.slice(0, parts.length - 2).join('_'); // всё до плана
+    const plan = parts[parts.length - 2];
+    const email = parts.slice(0, parts.length - 2).join('_').toLowerCase();
 
     if (!['basic', 'premium'].includes(plan)) {
-      console.error('Неизвестный план:', plan);
       return res.sendStatus(200);
     }
 
-    // Достаём пользователя из KV (Postgres)
     const kvGet = await pool.query(
       'SELECT value FROM kv_store WHERE k=$1 AND shared=$2 AND owner=$3',
-      [`user:${email.toLowerCase()}`, true, '']
+      [`user:${email}`, true, '']
     );
 
     if (kvGet.rows.length === 0) {
-      console.error('Пользователь не найден в KV:', email);
+      console.error('Пользователь не найден:', email);
       return res.sendStatus(200);
     }
 
@@ -98,45 +89,46 @@ app.post('/api/payment/webhook', express.raw({ type: '*/*' }), async (req, res) 
     user.paidAt = Date.now();
     user.paymentId = data.id || data.invoice_id || null;
 
-    // Реферальная комиссия: если юзер пришёл по рефке — начисляем 30% рефереру
+    // Реферальная комиссия 30%
     if (user.referredBy && !user.refCommissionPaid) {
       const prices = { basic: 990, premium: 1990 };
       const commission = Math.round((prices[plan] || 0) * 0.3);
+
       const refGet = await pool.query(
         `SELECT value FROM kv_store WHERE k LIKE 'user:%' AND shared=true AND owner='' AND value LIKE $1`,
         [`%"refCode":"${user.referredBy}"%`]
       );
+
       if (refGet.rows.length > 0) {
         const referrer = JSON.parse(refGet.rows[0].value);
-        const refEmail = referrer.email;
+        const refEmail = referrer.email.toLowerCase();
         referrer.balance = (referrer.balance || 0) + commission;
+
         await pool.query(
           `INSERT INTO kv_store (k, shared, owner, value, updated_at) VALUES ($1,$2,$3,$4,now())
            ON CONFLICT (k, shared, owner) DO UPDATE SET value=$4, updated_at=now()`,
-          [`user:${refEmail.toLowerCase()}`, true, '', JSON.stringify(referrer)]
+          [`user:${refEmail}`, true, '', JSON.stringify(referrer)]
         );
-        console.log(`Реферальная комиссия ${commission}₽ начислена рефереру ${refEmail}`);
+        console.log(`Реферальная комиссия ${commission}₽ начислена ${refEmail}`);
       }
       user.refCommissionPaid = true;
     }
 
-    // Сохраняем обновлённого пользователя
     await pool.query(
       `INSERT INTO kv_store (k, shared, owner, value, updated_at) VALUES ($1,$2,$3,$4,now())
        ON CONFLICT (k, shared, owner) DO UPDATE SET value=$4, updated_at=now()`,
-      [`user:${email.toLowerCase()}`, true, '', JSON.stringify(user)]
+      [`user:${email}`, true, '', JSON.stringify(user)]
     );
 
     console.log(`✅ Доступ "${plan}" выдан пользователю ${email}`);
     res.sendStatus(200);
-
   } catch (e) {
-    console.error('Ошибка обработки webhook:', e);
+    console.error('Ошибка webhook:', e);
     res.sendStatus(500);
   }
 });
 
-// Теперь подключаем json-парсер для всех остальных роутов
+// ====================== ОБЫЧНЫЕ MIDDLEWARE ======================
 app.use(express.json({ limit: '2mb' }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -154,7 +146,10 @@ async function initDb() {
   `);
   console.log('DB ready');
 }
-initDb().catch(e => { console.error('DB init failed:', e); process.exit(1); });
+initDb().catch(e => {
+  console.error('DB init failed:', e);
+  process.exit(1);
+});
 
 app.use((req, res, next) => {
   let bid = req.cookies.bid;
@@ -177,8 +172,7 @@ function ownerFor(req, shared) {
 
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// ---- KV API ----
-
+// ====================== KV API ======================
 app.post('/api/kv/get', async (req, res) => {
   try {
     const { key, shared } = req.body || {};
@@ -243,7 +237,7 @@ app.post('/api/kv/list', async (req, res) => {
   }
 });
 
-// ---- Создание счёта LavaPay ----
+// ====================== СОЗДАНИЕ СЧЁТА LAVAPAY ======================
 app.post('/api/payment/create', async (req, res) => {
   try {
     const { email, plan } = req.body || {};
@@ -257,14 +251,14 @@ app.post('/api/payment/create', async (req, res) => {
       return res.status(500).json({ error: 'Платёжная система не настроена' });
     }
 
-    // orderId: "email_plan_timestamp" — по нему в webhook достанем кому выдать доступ
     const orderId = `${email}_${plan}_${Date.now()}`;
+    // Сначала берём SELF_URL (как у тебя в Railway)
     const host = process.env.SELF_URL || process.env.SITE_URL || `https://${req.headers.host}`;
 
     const body = {
       sum: amount,
       shopId: process.env.LAVA_SHOP_ID,
-      orderId: orderId,
+      orderId,
       hookUrl: `${host}/api/payment/webhook`,
       successUrl: `${host}/api/payment/success?order=${encodeURIComponent(orderId)}`,
       failUrl: host,
@@ -272,7 +266,7 @@ app.post('/api/payment/create', async (req, res) => {
       currency: 'RUB',
     };
 
-   const bodyString = JSON.stringify(body);
+    const bodyString = JSON.stringify(body);
     const signature = crypto
       .createHmac('sha256', process.env.LAVA_SECRET_KEY)
       .update(bodyString)
@@ -301,13 +295,11 @@ app.post('/api/payment/create', async (req, res) => {
   }
 });
 
-// ---- Редирект после успешной оплаты ----
 app.get('/api/payment/success', (req, res) => {
-  // Редирект на фронт с флагом — JS покажет toast и обновит данные юзера
   res.redirect('/?paid=1');
 });
 
-// ---- AI Video Mentor ----
+// ====================== AI VIDEO MENTOR ======================
 app.post('/api/mentor', async (req, res) => {
   try {
     const { message } = req.body || {};
@@ -315,9 +307,9 @@ app.post('/api/mentor', async (req, res) => {
       return res.status(400).json({ error: 'no_message' });
     }
 
-    const systemPrompt = 'Ты AI Video Mentor — помощник по созданию видео с ИИ. Помогаешь писать промпты для Veo, Kling, Runway, Midjourney. Отвечаешь кратко, по делу, на русском.';
+    const systemPrompt = 'Ты AI Video Mentor — помощник по созданию видео с ИИ. Помогаешь писать промпты для Veo, Kling, Runway и Midjourney. Отвечаешь кратко, по делу и только на русском языке.';
 
-    // Сначала пробуем Anthropic (если ключ есть)
+    // 1. Если есть Anthropic — используем его
     if (process.env.ANTHROPIC_API_KEY) {
       const r = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -328,7 +320,7 @@ app.post('/api/mentor', async (req, res) => {
         },
         body: JSON.stringify({
           model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
+          max_tokens: 1200,
           system: systemPrompt,
           messages: [{ role: 'user', content: message }]
         })
@@ -337,7 +329,7 @@ app.post('/api/mentor', async (req, res) => {
       return res.json({ answer: data.content?.[0]?.text || 'Не удалось получить ответ.' });
     }
 
-    // Если Anthropic нет — используем Groq (у вас он уже есть)
+    // 2. Иначе используем Groq (у тебя он уже стоит)
     if (process.env.GROQ_API_KEY) {
       const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
@@ -347,7 +339,8 @@ app.post('/api/mentor', async (req, res) => {
         },
         body: JSON.stringify({
           model: 'llama-3.3-70b-versatile',
-          max_tokens: 1000,
+          max_tokens: 1200,
+          temperature: 0.7,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: message }
@@ -365,10 +358,12 @@ app.post('/api/mentor', async (req, res) => {
   }
 });
 
-// SPA fallback
+// ====================== SPA FALLBACK ======================
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log('Server running on port ' + PORT));
+app.listen(PORT, () => {
+  console.log('Server running on port ' + PORT);
+});
