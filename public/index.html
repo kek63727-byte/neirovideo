@@ -1769,7 +1769,22 @@ footer {
     <div id="dash-certificate" style="margin-top:36px;"></div>
   </div>
 </div>
-
+<!-- ===================== PARTNER ===================== -->
+<div id="view-partner" class="hidden">
+  <div class="wrap section">
+    <div class="dash-top">
+      <div>
+        <h2 style="margin-bottom:4px;">Партнёрская программа</h2>
+        <p class="muted" style="font-size:13px;">Приглашай друзей — получай 30% с каждой их покупки</p>
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <button class="cta-ghost-small" onclick="goto('dashboard')">← В кабинет</button>
+        <button class="cta-ghost-small" onclick="logout()">Выйти</button>
+      </div>
+    </div>
+    <div id="partner-content"></div>
+  </div>
+</div>
 <!-- ===================== PROMPTS ===================== -->
 
 <div id="view-prompts" class="hidden">
@@ -2127,6 +2142,7 @@ style="width:100%;padding:16px;border-radius:12px;">
         <a onclick="goto('landing');scrollToId('pricing')">Стоимость</a>
         <a onclick="goto('landing');scrollToId('testimonials')">Отзывы</a>
         <a onclick="goto('landing');scrollToId('faq')">Вопросы</a>
+        <a onclick="goto('partner')">Партнёрская программа</a>
       </div>
 
       <div class="footer-col">
@@ -2622,11 +2638,13 @@ function goto(view){
   document.getElementById('view-mentor').classList.toggle('hidden', view!=='mentor');
   document.getElementById('view-prompts').classList.toggle('hidden', view!=='prompts');
   document.getElementById('view-tts').classList.toggle('hidden', view!=='tts');
+  document.getElementById('view-partner').classList.toggle('hidden', view!=='partner');
   if(view==='auth') renderAuth('login');
   if(view==='dashboard') renderDashboard();
   if(view==='prompts') renderPromptLibrary();
   if(view==='admin') renderAdmin();
   if(view==='tts') initTTS();
+  if(view==='partner') renderPartnerPage();
   window.scrollTo({top:0, behavior:'instant'});
   updateNavAuth();
   updateFab();
@@ -2940,7 +2958,7 @@ function renderDashboard(){
   document.getElementById('dash-upsell').classList.toggle('hidden', currentUser.plan!=='basic');
   renderCurriculum('dash-curriculum', hasAccess(currentUser));
   renderPrompts();
-  renderReferralBlock();
+  renderReferralTeaser();
   renderCertificateBlock();   // ← вот это добавили
   if(currentUser.hasRefDiscount){
     const priceBtn = document.querySelector('#dash-locked .btn-primary');
@@ -3036,55 +3054,124 @@ async function adminSetOwnPlan(plan){
   renderDashboard();
 }
 
-async function renderReferralBlock(){
+function renderReferralTeaser(){
   const box = document.getElementById('dash-referral');
   if(!box || !currentUser) return;
-  const link = window.location.origin + window.location.pathname + '?ref=' + currentUser.refCode;
+  box.innerHTML = `
+    <div class="lockcard" style="margin-top:28px; cursor:pointer;" onclick="goto('partner')">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:14px;">
+          <div style="font-size:28px;">🤝</div>
+          <div>
+            <div style="font-weight:600; font-size:16px; margin-bottom:2px;">Партнёрская программа</div>
+            <div class="muted" style="font-size:13px;">30% с каждой покупки по твоей ссылке · вывод от $50</div>
+          </div>
+        </div>
+        <button class="btn-primary" style="pointer-events:none;">Открыть →</button>
+      </div>
+    </div>
+  `;
+}
+
+async function renderPartnerPage(){
+  if(!currentUser){ goto('auth'); return; }
+  const box = document.getElementById('partner-content');
+  if(!box) return;
+
+  const link = window.location.origin + '/?ref=' + currentUser.refCode;
   const users = await listUsers();
-  const invited = users.filter(u=>u.referredBy===currentUser.refCode);
+  const invited = users.filter(u => u.referredBy === currentUser.refCode);
   const balance = currentUser.balance || 0;
-  const threshold = 50 * 95; // $50 в рублях
-  const progressPct = Math.min(100, Math.round((balance/threshold)*100));
+  const threshold = 50 * 95;
+  const progressPct = Math.min(100, Math.round((balance / threshold) * 100));
 
   box.innerHTML = `
-    <div class="ref-card">
+    <div class="lockcard" style="margin-bottom:28px;">
+      <div style="font-weight:600; font-size:17px; margin-bottom:14px;">Как это работает</div>
+      <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:16px;">
+        <div>
+          <div style="font-size:22px; margin-bottom:6px;">1</div>
+          <div style="font-weight:600; margin-bottom:4px;">Делишься ссылкой</div>
+          <div class="muted" style="font-size:13px;">Отправляешь свою реферальную ссылку друзьям, в Telegram, на YouTube и т.д.</div>
+        </div>
+        <div>
+          <div style="font-size:22px; margin-bottom:6px;">2</div>
+          <div style="font-weight:600; margin-bottom:4px;">Они покупают со скидкой</div>
+          <div class="muted" style="font-size:13px;">По твоей ссылке человеку автоматически даётся скидка 10% на любой тариф.</div>
+        </div>
+        <div>
+          <div style="font-size:22px; margin-bottom:6px;">3</div>
+          <div style="font-weight:600; margin-bottom:4px;">Ты получаешь 30%</div>
+          <div class="muted" style="font-size:13px;">С каждой оплаты на твой баланс сразу начисляется 30% комиссии.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="ref-card" style="margin-bottom:28px;">
       <div class="ref-head">
         <div class="ref-icon">🤝</div>
-        <div class="ref-title">Реферальная программа</div>
+        <div class="ref-title">Твоя реферальная ссылка</div>
       </div>
-      <p class="ref-sub">Приглашайте друзей по своей ссылке — они получают <b>скидку 10%</b> на любой тариф, а вы — <b>30%</b> с каждой их покупки. Вывод от $50.</p>
-
+      <p class="ref-sub">Друзья получают <b>скидку 10%</b>, ты — <b>30%</b> с каждой покупки. Вывод от $50.</p>
       <div class="ref-link-row">
         <input class="ref-link-input" id="ref-link-field" readonly value="${link}" onclick="this.select()">
         <button class="ref-copy-btn" id="ref-copy-btn" onclick="copyRefLink()">Скопировать</button>
       </div>
-
       <div class="ref-stats-grid">
-        <div class="ref-stat"><div class="ref-stat-val">${balance} ₽</div><div class="ref-stat-label">Баланс</div></div>
+        <div class="ref-stat"><div class="ref-stat-val">${balance.toLocaleString('ru')} ₽</div><div class="ref-stat-label">Баланс</div></div>
         <div class="ref-stat"><div class="ref-stat-val">${invited.length}</div><div class="ref-stat-label">Приглашено</div></div>
         <div class="ref-stat"><div class="ref-stat-val">30%</div><div class="ref-stat-label">Комиссия</div></div>
       </div>
-
       <div class="ref-progress-wrap">
-        <div class="ref-progress-label"><span>До выплаты ($50)</span><b>${balance} / ${threshold} ₽</b></div>
+        <div class="ref-progress-label"><span>До выплаты ($50)</span><b>${balance.toLocaleString('ru')} / ${threshold.toLocaleString('ru')} ₽</b></div>
         <div class="ref-progress-track"><div class="ref-progress-fill" style="width:${progressPct}%;"></div></div>
       </div>
-
-      <button class="ref-withdraw-btn" onclick="requestWithdrawal()" ${balance<threshold ? 'disabled' : ''}>
-        ${balance<threshold ? 'Недостаточно для вывода' : 'Запросить выплату'}
+      <button class="ref-withdraw-btn" onclick="requestWithdrawal()" ${balance < threshold ? 'disabled' : ''}>
+        ${balance < threshold ? 'Недостаточно для вывода' : 'Запросить выплату'}
       </button>
-    </div>`;
+    </div>
+
+    <div class="lockcard">
+      <div style="font-weight:600; font-size:17px; margin-bottom:14px;">Приглашённые пользователи</div>
+      ${invited.length === 0
+        ? '<div class="muted" style="font-size:14px;">Пока никто не зарегистрировался по твоей ссылке.</div>'
+        : `<div style="display:flex; flex-direction:column; gap:8px;">
+            ${invited.map(u => `
+              <div style="display:flex; justify-content:space-between; align-items:center; padding:12px 14px; background:var(--bg-soft); border-radius:12px; border:1px solid var(--line);">
+                <div>
+                  <div style="font-weight:600; font-size:14px;">${escapeHtml(u.email)}</div>
+                  <div class="muted" style="font-size:12px;">${u.plan && u.plan !== 'none' ? 'Оплатил: ' + (PLAN_LABEL[u.plan] || u.plan) : 'Ещё не оплатил'}</div>
+                </div>
+                <span class="tag ${u.plan === 'premium' ? 'premium' : u.plan === 'basic' ? 'basic' : ''}">${PLAN_LABEL[u.plan] || 'не оплачено'}</span>
+              </div>
+            `).join('')}
+          </div>`
+      }
+    </div>
+  `;
 }
 
 function copyRefLink(){
   const field = document.getElementById('ref-link-field');
+  if(!field) return;
   field.select();
   navigator.clipboard.writeText(field.value).then(()=>{
     const btn = document.getElementById('ref-copy-btn');
+    if(!btn) return;
     btn.textContent = 'Скопировано ✓';
     btn.classList.add('copied');
     setTimeout(()=>{ btn.textContent = 'Скопировать'; btn.classList.remove('copied'); }, 1800);
   });
+}
+
+async function requestWithdrawal(){
+  if((currentUser.balance||0) < 50*95){ showToast('Минимум для вывода — $50', 'warn'); return; }
+  currentUser.withdrawals = currentUser.withdrawals || [];
+  currentUser.withdrawals.push({amount: currentUser.balance, ts: Date.now(), status:'pending'});
+  currentUser.balance = 0;
+  await setUser(currentUser);
+  showToast('Запрос на выплату отправлен', 'success');
+  renderPartnerPage();
 }
 
 async function requestWithdrawal(){
