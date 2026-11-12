@@ -1766,6 +1766,7 @@ footer {
     <div id="dash-curriculum" class="timeline"></div>
     <div id="dash-prompts"></div>
     <div id="dash-referral"></div>
+    <div id="dash-certificate" style="margin-top:36px;"></div>
   </div>
 </div>
 
@@ -2930,7 +2931,7 @@ function renderDashboard(){
   if(!currentUser){ goto('auth'); return; }
   document.getElementById('dash-email').textContent = currentUser.email;
   const badge = document.getElementById('dash-badge');
-document.getElementById('admin-self-plan').classList.toggle('hidden', !currentUser.isAdmin);
+  document.getElementById('admin-self-plan').classList.toggle('hidden', !currentUser.isAdmin);
   
   badge.textContent = PLAN_LABEL[currentUser.plan] || 'не оплачено';
   badge.className = 'badge plan-'+(currentUser.plan||'none');
@@ -2940,11 +2941,92 @@ document.getElementById('admin-self-plan').classList.toggle('hidden', !currentUs
   renderCurriculum('dash-curriculum', hasAccess(currentUser));
   renderPrompts();
   renderReferralBlock();
+  renderCertificateBlock();   // ← вот это добавили
   if(currentUser.hasRefDiscount){
     const priceBtn = document.querySelector('#dash-locked .btn-primary');
     if(priceBtn) priceBtn.textContent = 'Оплатить курс — от '+Math.round(990*0.9)+' ₽ (скидка 10%)';
   }
   startWidgetPolling();
+}
+
+function renderCertificateBlock(){
+  const box = document.getElementById('dash-certificate');
+  if(!box || !currentUser) return;
+
+  // Только для тех, у кого есть доступ
+  if(!hasAccess(currentUser)){
+    box.innerHTML = '';
+    return;
+  }
+
+  const status = currentUser.certStatus || 'none';
+
+  if(status === 'issued'){
+    const date = currentUser.certIssuedAt 
+      ? new Date(currentUser.certIssuedAt).toLocaleDateString('ru-RU') 
+      : '';
+    box.innerHTML = `
+      <div class="lockcard" style="border-color:var(--green);">
+        <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+          <div style="font-size:32px;">🎓</div>
+          <div>
+            <div style="font-weight:600; font-size:17px; margin-bottom:4px;">Сертификат выдан</div>
+            <div class="muted" style="font-size:13px;">
+              Поздравляем с прохождением курса «Нейровидео»!
+              ${date ? '<br>Дата выдачи: ' + date : ''}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  if(status === 'requested'){
+    box.innerHTML = `
+      <div class="lockcard" style="border-color:var(--gold);">
+        <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+          <div style="font-size:32px;">⏳</div>
+          <div>
+            <div style="font-weight:600; font-size:17px; margin-bottom:4px;">Заявка на сертификат отправлена</div>
+            <div class="muted" style="font-size:13px;">
+              Преподаватель проверит прохождение и выдаст сертификат. Обычно это занимает немного времени.
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  // status === 'none'
+  box.innerHTML = `
+    <div class="lockcard">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap;">
+        <div style="display:flex; align-items:center; gap:14px;">
+          <div style="font-size:32px;">📜</div>
+          <div>
+            <div style="font-weight:600; font-size:17px; margin-bottom:4px;">Сертификат о прохождении</div>
+            <div class="muted" style="font-size:13px; max-width:420px;">
+              Когда пройдёте все уроки — нажмите кнопку. Заявка придёт преподавателю, и он выдаст сертификат.
+            </div>
+          </div>
+        </div>
+        <button class="btn-primary" onclick="requestCertificate()">Я прошёл курс — запросить сертификат</button>
+      </div>
+    </div>
+  `;
+}
+
+async function requestCertificate(){
+  if(!currentUser || !hasAccess(currentUser)) return;
+  if(currentUser.certStatus === 'requested' || currentUser.certStatus === 'issued') return;
+
+  currentUser.certStatus = 'requested';
+  currentUser.certRequestedAt = Date.now();
+  await setUser(currentUser);
+  showToast('Заявка на сертификат отправлена!', 'success');
+  renderCertificateBlock();
 }
 
 async function adminSetOwnPlan(plan){
@@ -4128,8 +4210,17 @@ async function renderAdminUserList(){
     const planClass = u.plan==='premium'?'premium':(u.plan==='basic'?'basic':'');
     const active = u.email===adminSelectedEmail ? ' active' : '';
     const you = u.email===currentUser.email ? ' <span class="tag admin">вы</span>' : '';
-const balanceBadge = u.balance ? ' <span class="tag" style="color:var(--green);border-color:var(--green);">'+u.balance+' ₽</span>' : '';
-return '<div class="userrow'+active+'" onclick="selectAdminUser(\''+u.email+'\')"><div class="ue">'+escapeHtml(u.email)+you+balanceBadge+'</div><div class="utags"><span class="tag '+planClass+'">'+escapeHtml(PLAN_LABEL[u.plan]||'не оплачено')+'</span></div></div>';
+    const balanceBadge = u.balance ? ' <span class="tag" style="color:var(--green);border-color:var(--green);">'+u.balance+' ₽</span>' : '';
+    
+    // метка сертификата
+    let certBadge = '';
+    if(u.certStatus === 'requested'){
+      certBadge = ' <span class="tag" style="color:var(--gold);border-color:var(--gold);">сертификат</span>';
+    } else if(u.certStatus === 'issued'){
+      certBadge = ' <span class="tag" style="color:var(--green);border-color:var(--green);">сертификат ✓</span>';
+    }
+
+    return '<div class="userrow'+active+'" onclick="selectAdminUser(\''+u.email+'\')"><div class="ue">'+escapeHtml(u.email)+you+balanceBadge+certBadge+'</div><div class="utags"><span class="tag '+planClass+'">'+escapeHtml(PLAN_LABEL[u.plan]||'не оплачено')+'</span></div></div>';
   }).join('');
 }
 async function selectAdminUser(email){
@@ -4141,6 +4232,7 @@ async function selectAdminUser(email){
   document.getElementById('chatpanel-active').classList.remove('hidden');
   document.getElementById('admin-chat-title').textContent = u.email;
   updateAdminPlanUI(u.plan);
+  updateAdminCertUI(u);          // ← добавили
   renderAdminQuickReplies();
   const msgs = await getMessages(email);
   lastAdminMsgCount[email] = msgs.length;
@@ -4151,6 +4243,52 @@ function updateAdminPlanUI(plan){
   const btn = document.getElementById('admin-plan-toggle');
   btn.className = 'togglebtn '+(plan==='premium'?'premium':(plan==='basic'?'basic':''));
   btn.textContent = 'план: '+(PLAN_LABEL[plan]||'не оплачено')+' →';
+}
+function updateAdminCertUI(u){
+  let btn = document.getElementById('admin-cert-btn');
+  if(!btn){
+    const header = document.querySelector('.admin-chat-header');
+    if(!header) return;
+    btn = document.createElement('button');
+    btn.id = 'admin-cert-btn';
+    btn.className = 'togglebtn';
+    btn.style.marginLeft = '8px';
+    btn.onclick = adminIssueCertificate;
+    header.appendChild(btn);
+  }
+
+  if(u.certStatus === 'requested'){
+    btn.style.display = '';
+    btn.textContent = 'Выдать сертификат';
+    btn.style.color = 'var(--gold)';
+    btn.style.borderColor = 'var(--gold)';
+  } else if(u.certStatus === 'issued'){
+    btn.style.display = '';
+    btn.textContent = 'Сертификат выдан ✓';
+    btn.style.color = 'var(--green)';
+    btn.style.borderColor = 'var(--green)';
+  } else {
+    btn.style.display = 'none';
+  }
+}
+
+async function adminIssueCertificate(){
+  if(!adminSelectedEmail) return;
+  const u = await getUser(adminSelectedEmail);
+  if(!u) return;
+
+  if(u.certStatus !== 'requested'){
+    showToast('Нет активной заявки на сертификат', 'warn');
+    return;
+  }
+
+  u.certStatus = 'issued';
+  u.certIssuedAt = Date.now();
+  await setUser(u);
+
+  updateAdminCertUI(u);
+  await renderAdminUserList();
+  showToast('Сертификат выдан: ' + u.email, 'success');
 }
 async function adminCyclePlan(){
   if(!adminSelectedEmail) return;
